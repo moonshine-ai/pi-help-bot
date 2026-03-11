@@ -1,0 +1,6 @@
+moonshine-voice
+beautifulsoup4
+playwright
+ollama
+cdx-toolkit
+anthropic
