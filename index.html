@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Raspberry Pi Help Bot</title>
+  <script src="https://cdn.jsdelivr.net/npm/@asciidoctor/core@2.2.6/dist/browser/asciidoctor.min.js"></script>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --text: #222;
+      --muted: #555;
+      --accent: #c51c28;
+      --border: #e0e0e0;
+      --radius: 24px;
+      --shadow: 0 1px 6px rgba(0,0,0,0.08);
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .header {
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0;
+    }
+    .logo:hover {
+      color: var(--accent);
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 600;
+      font-size: 1.125rem;
+    }
+    .logo img {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    .search-wrap {
+      margin-bottom: 2rem;
+    }
+    .search-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .search-row {
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .search-row:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(197, 28, 40, 0.15);
+    }
+    .search-input {
+      flex: 1;
+      border: none;
+      padding: 0.875rem 1.25rem;
+      font-size: 1rem;
+      font-family: inherit;
+      outline: none;
+      background: transparent;
+    }
+    .search-btn {
+      padding: 0.75rem 1.5rem;
+      margin: 0.25rem 0.25rem 0.25rem 0;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 20px;
+      font-size: 0.9375rem;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .search-btn:hover {
+      background: #a01721;
+    }
+    .search-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .results {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .result {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .result summary {
+      padding: 0.875rem 1rem;
+      cursor: pointer;
+      font-weight: 500;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .result summary::-webkit-details-marker { display: none; }
+    .result summary::after {
+      content: "▼";
+      font-size: 0.7em;
+      color: var(--muted);
+      transition: transform 0.2s;
+    }
+    .result[open] summary::after { transform: rotate(-180deg); }
+    .result-head {
+      flex: 1;
+      min-width: 0;
+    }
+    .result-sentence {
+      color: var(--text);
+      margin: 0;
+    }
+    .result-meta {
+      font-size: 0.8125rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+    .result-distance {
+      font-size: 0.75rem;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .result-body {
+      padding: 0 1rem 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .result-body .content-doc {
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .result-body .content-doc h1,
+    .result-body .content-doc h2,
+    .result-body .content-doc h3 {
+      margin: 1em 0 0.5em;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .result-body .content-doc h1 { font-size: 1.25rem; }
+    .result-body .content-doc h2 { font-size: 1.1rem; }
+    .result-body .content-doc h3 { font-size: 1rem; }
+    .result-body .content-doc p { margin: 0.5em 0; }
+    .result-body .content-doc ul, .result-body .content-doc ol { margin: 0.5em 0; padding-left: 1.5em; }
+    .result-body .content-doc code { background: #f5f5f5; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; }
+    .result-body .content-doc pre { background: #f5f5f5; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+    .result-body .content-doc pre code { padding: 0; background: none; }
+    .result-body .content-error {
+      font-size: 0.875rem;
+      color: var(--muted);
+      font-style: italic;
+    }
+    .loading, .empty, .error-msg {
+      text-align: center;
+      padding: 2rem;
+      color: var(--muted);
+    }
+    .error-msg { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <a href="https://www.moonshine.ai/" class="logo" aria-label="Moonshine AI" target="_blank" rel="noopener">
+      <img src="https://www.moonshine.ai/moonshine_logo.png" alt="Moonshine AI" width="28" height="28">
+      <span>Moonshine</span>
+    </a>
+    <h1 class="header-title">Raspberry Pi Help Bot</h1>
+  </header>
+  <main class="main">
+    <div class="search-wrap">
+      <form class="search-form" id="searchForm" action="#" method="get">
+        <div class="search-row">
+          <input type="text" name="q" class="search-input" id="query" placeholder="Search documentation…" autocomplete="off" autofocus>
+          <button type="submit" class="search-btn" id="submitBtn">Search</button>
+        </div>
+      </form>
+    </div>
+    <div id="resultsContainer"></div>
+  </main>
+  <script>
+    (function () {
+      const form = document.getElementById('searchForm');
+      const queryEl = document.getElementById('query');
+      const submitBtn = document.getElementById('submitBtn');
+      const container = document.getElementById('resultsContainer');
+      // Resolve Asciidoctor converter: @asciidoctor/core exposes Asciidoctor(), legacy bundle may expose asciidoctor instance
+      const getConverter = (function () {
+        if (typeof Asciidoctor === 'function') {
+          var instance = Asciidoctor();
+          return (instance && typeof instance.convert === 'function') ? instance : null;
+        }
+        if (typeof asciidoctor !== 'undefined' && typeof asciidoctor.convert === 'function') {
+          return asciidoctor;
+        }
+        return null;
+      })();
+
+      function setLoading(loading) {
+        submitBtn.disabled = loading;
+      }
+
+      function renderAdoc(adoc) {
+        if (!adoc) return '';
+        var converter = getConverter;
+        if (converter) {
+          try {
+            var out = converter.convert(adoc, { safe: 'safe', attributes: { showtitle: true } });
+            if (typeof out === 'string') return out;
+            if (out && out.toString) return out.toString();
+            if (out && out.content) return out.content;
+          } catch (e) {
+            console.warn('Asciidoctor.convert error:', e);
+          }
+        }
+        return '<pre class="content-raw">' + escapeHtml(adoc) + '</pre>';
+      }
+
+      function escapeHtml(s) {
+        const div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function renderResult(r, index, defaultOpen) {
+        const hasContent = r.content_adoc || r.content_error;
+        const openAttr = defaultOpen ? ' open' : '';
+        const sourceLabel = r.source ? r.source.replace(/#/g, ' → ') : '';
+        let bodyHtml = '';
+        if (hasContent) {
+          if (r.content_error) {
+            bodyHtml = '<p class="content-error">' + escapeHtml(r.content_error) + '</p>';
+          } else if (r.content_adoc) {
+            bodyHtml = '<div class="content-doc">' + renderAdoc(r.content_adoc) + '</div>';
+          }
+        }
+        return (
+          '<div class="result">' +
+            '<details' + openAttr + '>' +
+              '<summary>' +
+                '<span class="result-head">' +
+                  '<p class="result-sentence">' + escapeHtml(r.sentence) + '</p>' +
+                  (sourceLabel ? '<p class="result-meta">' + escapeHtml(sourceLabel) + '</p>' : '') +
+                '</span>' +
+                '<span class="result-distance">distance ' + r.distance + '</span>' +
+              '</summary>' +
+              (bodyHtml ? '<div class="result-body">' + bodyHtml + '</div>' : '') +
+            '</details>' +
+          '</div>'
+        );
+      }
+
+      function showResults(data) {
+        const results = data.results || [];
+        if (results.length === 0) {
+          container.innerHTML = '<p class="empty">No close matches (only results with distance &lt; 0.35 are shown).</p>';
+          return;
+        }
+        let html = '<div class="results">';
+        results.forEach(function (r, i) {
+          html += renderResult(r, i, i === 0);
+        });
+        html += '</div>';
+        container.innerHTML = html;
+      }
+
+      function showError(msg) {
+        container.innerHTML = '<p class="error-msg">' + escapeHtml(msg) + '</p>';
+      }
+
+      function runSearch(q) {
+        if (!q) return;
+        var url = new URL(window.location.href);
+        url.searchParams.set('q', q);
+        window.history.replaceState({ q: q }, '', url.toString());
+        container.innerHTML = '<p class="loading">Searching…</p>';
+        setLoading(true);
+        fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q })
+        })
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.status === 400 ? 'Missing question' : 'Search failed');
+            return res.json();
+          })
+          .then(showResults)
+          .catch(function (err) {
+            showError(err.message || 'Request failed');
+          })
+          .finally(function () {
+            setLoading(false);
+          });
+      }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var q = (queryEl.value || '').trim();
+        if (!q) return;
+        runSearch(q);
+      });
+
+      (function checkUrlQuery() {
+        var params = new URLSearchParams(window.location.search);
+        var q = params.get('q');
+        if (q && (q = q.trim())) {
+          queryEl.value = q;
+          runSearch(q);
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>

@@ -1,4 +1,5 @@
 moonshine-voice
+flask
 beautifulsoup4
 playwright
 ollama
