@@ -66,28 +66,36 @@ def _adoc_path_from_source(doc_root: Path, source_path: str) -> Path | None:
 def _extract_section_as_adoc(lines: list[str], section_slug: str) -> str | None:
     """
     Find the section with the given anchor slug and return its raw asciidoc
-    (heading line + body lines until the next same- or higher-level heading).
+    including the section heading, all body content, and all child subheadings
+    (====, =====, etc.) until a heading at the same level (===) or higher.
     """
+    section_slug = (section_slug or "").strip().lower()
     pending_anchor: str | None = None
     in_literal = False
     i = 0
-    section_start: int | None = None
-    section_level = 0
+    collecting: list[str] = []  # lines we're including in the result
+    section_level: int | None = None  # level of the matched section (1= =, 2= ==, ...)
 
     while i < len(lines):
         line = lines[i]
 
         if line.strip() in ("----", "...."):
             in_literal = not in_literal
+            if collecting:
+                collecting.append(line)
             i += 1
             continue
         if in_literal:
+            if collecting:
+                collecting.append(line)
             i += 1
             continue
 
         m_anchor = _ANCHOR_RE.match(line.strip())
         if m_anchor:
             pending_anchor = m_anchor.group(1)
+            if collecting:
+                collecting.append(line)
             i += 1
             continue
 
@@ -97,22 +105,43 @@ def _extract_section_as_adoc(lines: list[str], section_slug: str) -> str | None:
             heading = m_head.group(2).strip()
             anchor = pending_anchor or _asciidoc_slug(heading)
             pending_anchor = None
+            heading_slug = _asciidoc_slug(heading)
 
-            if section_start is not None:
-                # End of previous section; we've found the next heading
-                return "\n".join(lines[section_start:i])
+            if section_level is not None:
+                # We're inside the section. Same/higher level usually means stop.
+                anchor_match = anchor.strip().lower() == section_slug
+                heading_match = heading_slug.strip().lower() == section_slug
+                # If this heading also matches the slug and is shallower, switch to this section
+                if (anchor_match or heading_match) and level < section_level:
+                    collecting = [line]
+                    section_level = level
+                    i += 1
+                    continue
+                if level <= section_level:
+                    return "\n".join(collecting)
+                # Child subheading (level > section_level): include this line and keep going
+                collecting.append(line)
+                i += 1
+                continue
 
-            if anchor == section_slug:
-                section_start = i
-                section_level = level
+            # Not yet in section: check if this heading matches the requested slug
+            anchor_match = anchor.strip().lower() == section_slug
+            heading_match = heading_slug.strip().lower() == section_slug
+            if anchor_match or heading_match:
+                # Prefer shallowest match (smaller level = higher in hierarchy)
+                if not collecting or level < section_level:
+                    collecting = [line]
+                    section_level = level
             i += 1
             continue
 
         pending_anchor = None
+        if collecting:
+            collecting.append(line)
         i += 1
 
-    if section_start is not None:
-        return "\n".join(lines[section_start:])
+    if collecting:
+        return "\n".join(collecting)
     return None
 
 

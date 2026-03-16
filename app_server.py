@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,8 +27,140 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from doc_content import get_doc_content
 from question_search import QuestionSearch
+
+# -----------------------------------------------------------------------------
+# Doc content extraction (inlined so the server always uses this code)
+# -----------------------------------------------------------------------------
+_HEADING_RE = re.compile(r"^(={1,6})\s+(.+)$")
+_ANCHOR_RE = re.compile(r"^\[#([\w\-]+)\]")
+_INCLUDE_RE = re.compile(r"^include::([^\[]+)\[")
+
+
+def _asciidoc_slug(text: str) -> str:
+    s = text.lower()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"-{2,}", "-", s)
+    return s.strip("-")
+
+
+def _resolve_includes(adoc_path: Path, depth: int = 0) -> list[str]:
+    if depth > 8 or not adoc_path.exists():
+        return []
+    lines = adoc_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    result = []
+    for line in lines:
+        m = _INCLUDE_RE.match(line)
+        if m:
+            include_path = adoc_path.parent / m.group(1)
+            result.extend(_resolve_includes(include_path, depth + 1))
+        else:
+            result.append(line)
+    return result
+
+
+def _adoc_path_from_source(doc_root: Path, source_path: str) -> Path | None:
+    path_part = source_path.replace("\\", "/").strip("/")
+    if path_part.endswith(".faq"):
+        path_part = path_part[:-4]
+    if not path_part.endswith(".adoc"):
+        path_part = path_part + ".adoc"
+    full = doc_root / path_part
+    if full.exists():
+        return full
+    alt = doc_root / (source_path.strip("/").replace(".faq", "") + ".adoc")
+    return alt if alt.exists() else None
+
+
+def _extract_section_as_adoc(lines: list[str], section_slug: str) -> str | None:
+    section_slug = (section_slug or "").strip().lower()
+    pending_anchor: str | None = None
+    in_literal = False
+    i = 0
+    collecting: list[str] = []
+    section_level: int | None = None
+
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() in ("----", "...."):
+            in_literal = not in_literal
+            if collecting:
+                collecting.append(line)
+            i += 1
+            continue
+        if in_literal:
+            if collecting:
+                collecting.append(line)
+            i += 1
+            continue
+        m_anchor = _ANCHOR_RE.match(line.strip())
+        if m_anchor:
+            pending_anchor = m_anchor.group(1)
+            if collecting:
+                collecting.append(line)
+            i += 1
+            continue
+        m_head = _HEADING_RE.match(line)
+        if m_head:
+            level = len(m_head.group(1))
+            heading = m_head.group(2).strip()
+            anchor = pending_anchor or _asciidoc_slug(heading)
+            pending_anchor = None
+            heading_slug = _asciidoc_slug(heading)
+            if section_level is not None:
+                anchor_match = anchor.strip().lower() == section_slug
+                heading_match = heading_slug.strip().lower() == section_slug
+                if (anchor_match or heading_match) and level < section_level:
+                    collecting = [line]
+                    section_level = level
+                    i += 1
+                    continue
+                if level <= section_level:
+                    return "\n".join(collecting)
+                collecting.append(line)
+                i += 1
+                continue
+            anchor_match = anchor.strip().lower() == section_slug
+            heading_match = heading_slug.strip().lower() == section_slug
+            if anchor_match or heading_match:
+                if not collecting or level < section_level:
+                    collecting = [line]
+                    section_level = level
+            i += 1
+            continue
+        pending_anchor = None
+        if collecting:
+            collecting.append(line)
+        i += 1
+    if collecting:
+        return "\n".join(collecting)
+    return None
+
+
+def get_doc_content(doc_root: Path, source: str) -> tuple[str | None, str | None]:
+    if "#" in source:
+        path_part, section_slug = source.split("#", 1)
+        section_slug = section_slug.strip()
+    else:
+        path_part = source
+        section_slug = "whole-document"
+    path_part = path_part.strip()
+    adoc_path = _adoc_path_from_source(doc_root, path_part)
+    if not adoc_path or not adoc_path.is_file():
+        return None, "File not found"
+    try:
+        lines = _resolve_includes(adoc_path)
+    except Exception as e:
+        return None, str(e)
+    if not lines:
+        return None, "Empty or unreadable file"
+    if section_slug == "whole-document":
+        return "\n".join(lines), None
+    content = _extract_section_as_adoc(lines, section_slug)
+    if content is None:
+        return None, f"Section '{section_slug}' not found"
+    return content, None
 
 try:
     from flask import Flask, request, send_from_directory
