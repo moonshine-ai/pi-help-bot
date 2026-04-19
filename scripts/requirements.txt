@@ -1,0 +1,5 @@
+anthropic
+moonshine-voice
+ollama
+tqdm
+netifaces
