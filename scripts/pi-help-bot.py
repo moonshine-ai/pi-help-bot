@@ -17,16 +17,21 @@ Run:
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 import netifaces as ni
 from moonshine_voice import (
+    SPELLED,
+    Dialog,
+    DialogFlow,
     IntentRecognizer,
     MicTranscriber,
     TextToSpeech,
     TranscriptEventListener,
     get_embedding_model,
     get_model_for_language,
+    spell_out,
 )
 
 
@@ -87,37 +92,170 @@ def load_doc_faqs(embeddings_path: str, intent_recognizer: IntentRecognizer, tts
     intent_recognizer.set_on_intent(on_any_intent)
 
 
-def add_config_commands(intent_recognizer: IntentRecognizer, tts: TextToSpeech) -> None:
+def _ssh_active() -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "ssh"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() == "active"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
-    def report_ip_address(trigger: str, utterance: str, similarity: float) -> None:
-        for iface in ni.interfaces():
-            addrs = ni.ifaddresses(iface)
-            if ni.AF_INET not in addrs:
-                continue
-            for addr_info in addrs[ni.AF_INET]:
-                ip = addr_info.get("addr", "")
-                if ip and not ip.startswith("127."):
-                    speech_ip = re.sub(
-                        r"(\d)", r"\1 ", ip.replace(".", " dot "))
-                    speech = [
-                        "Okay",
-                        f"Your local IP address is {speech_ip}",
-                        f"To repeat, that's {speech_ip}.",
-                    ]
-                    break
-        if speech is None:
-            speech = [
-                "Sorry",
-                "I couldn't find a local IP address.",
-            ]
-        print(f"[DEBUG] {speech}", file=sys.stderr)
-        tts.say(speech, speed=0.75)
 
-    intent_recognizer.register_intent(
-        "What is my IP address?",
-        report_ip_address,
-        embedding=None,
-    )
+def _ssh_port() -> int:
+    try:
+        with open("/etc/ssh/sshd_config", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("Port "):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 22
+
+
+def _current_wifi_ssid() -> str:
+    try:
+        result = subprocess.run(
+            ["iwgetid", "-r"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _find_local_ip() -> str | None:
+    for iface in ni.interfaces():
+        addrs = ni.ifaddresses(iface)
+        if ni.AF_INET not in addrs:
+            continue
+        for addr_info in addrs[ni.AF_INET]:
+            ip = addr_info.get("addr", "")
+            if ip and not ip.startswith("127."):
+                return ip
+    return None
+
+
+def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
+
+    def report_ip_address(d: Dialog):
+        ip = _find_local_ip()
+        if ip is None:
+            yield d.say("Sorry, I couldn't find a local IP address.")
+            return
+        speech_ip = re.sub(r"(\d)", r"\1 ", ip.replace(".", " dot "))
+        print(f"[DEBUG] reporting IP {ip!r} as {speech_ip!r}", file=sys.stderr)
+        yield d.say(
+            f"Okay. Your local IP address is {speech_ip}. "
+            f"To repeat, that's {speech_ip}."
+        )
+
+    dialog_flow.register_flow("What is my IP address?", report_ip_address)
+
+    def report_ssh_status(d: Dialog):
+        if not _ssh_active():
+            yield d.say(
+                "S S H is not enabled on this Raspberry Pi. "
+                "To enable it, say turn on S S H."
+            )
+            return
+        port = _ssh_port()
+        if port == 22:
+            yield d.say("S S H is enabled and running on the default port 22.")
+        else:
+            yield d.say(f"S S H is enabled and running on port {port}.")
+
+    dialog_flow.register_flow("Is ssh enabled?", report_ssh_status)
+
+    def enable_ssh(d: Dialog):
+        if _ssh_active():
+            yield d.say("S S H is already enabled.")
+            return
+        if not (yield d.confirm("This will enable S S H on this Raspberry Pi. Are you sure?")):
+            yield d.say("Okay, leaving S S H disabled.")
+            return
+        yield d.say("Enabling S S H now.")
+        try:
+            result = subprocess.run(
+                ["sudo", "raspi-config", "nonint", "do_ssh", "0"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except FileNotFoundError:
+            yield d.say("Sorry, raspi-config was not found on this system.")
+            return
+        except subprocess.TimeoutExpired:
+            yield d.say("Sorry, the command timed out while trying to enable S S H.")
+            return
+        if result.returncode == 0:
+            yield d.say("S S H has been enabled successfully.")
+        else:
+            print(f"[ERROR] raspi-config stderr: {result.stderr}", file=sys.stderr)
+            yield d.say("Sorry, I wasn't able to enable S S H.")
+
+    dialog_flow.register_flow("Turn on SSH", enable_ssh)
+
+    def report_wifi_status(d: Dialog):
+        ssid = _current_wifi_ssid()
+        if ssid:
+            yield d.say(f"Wi-Fi is connected to {ssid}.")
+        else:
+            yield d.say("Wi-Fi is not connected on this Raspberry Pi.")
+
+    dialog_flow.register_flow("Is Wi-Fi connected?", report_wifi_status)
+
+    def connect_to_wifi(d: Dialog):
+        ssid = yield d.ask("What's the name of your Wi-Fi network?")
+        ssid = ssid.strip()
+        if not ssid:
+            yield d.say("Sorry, I didn't catch a network name. Let's try again later.")
+            return
+        if not (yield d.confirm(f"I heard, {ssid}. Is that right?")):
+            yield d.say("No problem, let's start over.")
+            return
+
+        password = yield d.ask(
+            "Please spell the Wi-Fi password, one character at a time, "
+            "and say done when finished.",
+            mode=SPELLED,
+        )
+        if not password:
+            yield d.say("Sorry, I didn't catch a password. Let's try again later.")
+            return
+
+        if (yield d.confirm("Would you like me to read the password back?")):
+            yield d.say("I heard: " + " ".join(spell_out(password)))
+
+        if not (yield d.confirm(f"Connect to {ssid} now?")):
+            yield d.say("Okay, nothing changed.")
+            return
+
+        yield d.say(f"Connecting to {ssid}.")
+        try:
+            result = subprocess.run(
+                ["sudo", "nmcli", "device", "wifi", "connect", ssid, "password", password],
+                capture_output=True, text=True, timeout=30,
+            )
+        except FileNotFoundError:
+            yield d.say("Sorry, network manager was not found on this system.")
+            return
+        except subprocess.TimeoutExpired:
+            yield d.say("Sorry, the connection attempt timed out.")
+            return
+        if result.returncode == 0:
+            yield d.say(f"Connected to {ssid}.")
+        else:
+            print(f"[ERROR] nmcli stderr: {result.stderr}", file=sys.stderr)
+            yield d.say(
+                "Sorry, I wasn't able to connect. "
+                "Please check the network name and password and try again."
+            )
+
+    dialog_flow.register_flow("Connect to Wi-Fi", connect_to_wifi)
+
+    dialog_flow.register_global("cancel", lambda d: d.cancel())
+    dialog_flow.register_global("start over", lambda d: d.restart())
 
 
 class TranscriptLogger(TranscriptEventListener):
@@ -169,6 +307,12 @@ def main() -> None:
         help="Language/voice for text-to-speech (default: en-us)",
     )
     parser.add_argument(
+        "--tts-voice",
+        type=str,
+        default="piper_en_US-amy-low",
+        help="Voice for text-to-speech (default: piper_en_US-amy-low)",
+    )
+    parser.add_argument(
         "--option",
         action="append",
         default=[],
@@ -200,11 +344,15 @@ def main() -> None:
 
     print(
         f"Initializing TTS (language={args.tts_language})...", file=sys.stderr)
-    tts = TextToSpeech(args.tts_language, options=extra)
+    tts = TextToSpeech(args.tts_language, voice=args.tts_voice, options=extra)
 
     # load_doc_faqs(args.embeddings, intent_recognizer, tts)
 
-    add_config_commands(intent_recognizer, tts)
+    dialog_flow = DialogFlow(
+        tts=tts,
+        intent_recognizer=intent_recognizer,
+    )
+    add_config_commands(dialog_flow, tts)
 
     print(
         f"Loading transcription model (language={args.language})...",
@@ -216,7 +364,7 @@ def main() -> None:
         model_path=model_path, model_arch=model_arch
     )
     mic_transcriber.add_listener(TranscriptLogger())
-    mic_transcriber.add_listener(intent_recognizer)
+    mic_transcriber.add_listener(dialog_flow)
 
     tts.say(["Hello!", "I'm the Raspberry Pi Help Bot.", "How can I help you today?"])
 
