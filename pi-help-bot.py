@@ -22,8 +22,10 @@ import sys
 import time
 import Levenshtein
 import netifaces as ni
+import sounddevice as sd
 import string
 from pathlib import Path
+import pyudev
 from moonshine_voice import (
     EmbeddingModelArch,
     ModelArch,
@@ -45,56 +47,6 @@ def parse_options_cli(options: list[str]) -> dict[str, str | int | float | bool]
         k, v = option.split("=", 1)
         extra[k] = v
     return extra
-
-
-def load_doc_faqs(embeddings_path: str, intent_recognizer: IntentRecognizer, tts: TextToSpeech) -> dict[str, str]:
-    print(f"Loading embeddings from {embeddings_path}...", file=sys.stderr)
-    with open(embeddings_path, "r", encoding="utf-8") as f:
-        entries = json.load(f)
-    print(f"Loaded {len(entries)} FAQ entries.", file=sys.stderr)
-
-    answers = {}
-    for entry in entries:
-        question = entry["question"]
-        answer = entry.get("answer", "")
-        embedding = entry.get("embedding")
-
-        if not answer or not embedding:
-            continue
-
-        answers[question] = answer
-
-        def make_handler(q, a):
-            def handler(trigger: str, utterance: str, similarity: float):
-                print(f"\n--- Intent Match ---", file=sys.stderr)
-                print(f"  Utterance:  {utterance}", file=sys.stderr)
-                print(f"  Matched Q:  {trigger}", file=sys.stderr)
-                print(f"  Similarity: {similarity:.2%}", file=sys.stderr)
-                print(f"  Answer:     {a}", file=sys.stderr)
-                print(f"--------------------", file=sys.stderr)
-                tts.say(a)
-
-            return handler
-
-        intent_recognizer.register_intent(
-            question,
-            make_handler(question, answer),
-            embedding=embedding,
-        )
-
-    print(
-        f"Registered {intent_recognizer.intent_count} intents.", file=sys.stderr
-    )
-
-    def on_any_intent(match):
-        print(
-            f"[DEBUG] on_intent: canonical={match.canonical_phrase!r} "
-            f"utterance={match.utterance!r} similarity={match.similarity:.4f}",
-            file=sys.stderr,
-        )
-
-    intent_recognizer.set_on_intent(on_any_intent)
-
 
 def _ssh_active() -> bool:
     try:
@@ -324,8 +276,86 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
     dialog_flow.register_global("cancel", lambda d: d.cancel())
     dialog_flow.register_global("start over", lambda d: d.restart())
 
+def is_real_audio_input(d):
+    VIRTUAL_PREFIXES = (
+        'default', 'sysdefault', 'front', 'rear', 'center_lfe', 'side',
+        'surround', 'iec958', 'spdif', 'hdmi', 'modem', 'phoneline',
+        'dmix', 'dsnoop', 'pulse', 'pipewire', 'jack', 'oss',
+        'null', 'samplerate', 'speex', 'upmix', 'vdownmix',
+    )
+    HW_RE = re.compile(r'\((?:hw|plughw):(\d+),\d+\)')
+
+    if d['max_input_channels'] <= 0:
+        return False
+    if d['name'].startswith(VIRTUAL_PREFIXES):
+        return False
+    # Real hardware always carries an (hw:CARD,DEV) or (plughw:...) tag.
+    return bool(HW_RE.search(d['name']))
+
+def wait_for_input_device(retry_count: int = None) -> int:
+    """Poll sounddevice until an audio input device is available.
+
+    Re-initializes PortAudio on each poll so that newly hot-plugged devices
+    are picked up. Sleeps one second between polls. Returns the sounddevice
+    device index of the first device with input channels.
+    """
+    while retry_count is None or retry_count > 0:
+        try:
+            sd._terminate()
+            sd._initialize()
+            devices = sd.query_devices()
+            for idx, device in enumerate(devices):
+                if is_real_audio_input(device):
+                    print(
+                        f"[DEBUG] Found audio input device at index {idx}: "
+                        f"{device['name']!r}",
+                        file=sys.stderr,
+                    )
+                    return idx
+        except Exception as e:
+            print(f"[DEBUG] sounddevice query failed: {e}", file=sys.stderr)
+        print(
+            "[DEBUG] No audio input device available; sleeping 1s before next poll...",
+            file=sys.stderr,
+        )
+        time.sleep(1)
+        if retry_count is not None:
+            retry_count -= 1
+    print(f"[ERROR] No audio input device available after {retry_count} retries.", file=sys.stderr)
+    return None
+
+def refresh_devices():
+    # Force PortAudio to re-enumerate; otherwise sd.query_devices()
+    # keeps returning the snapshot from process start.
+    sd._terminate()
+    sd._initialize()
+
+def on_event(action, device):
+    # 'sound' fires for cards, controls, pcm nodes — you'll get several
+    # events per USB plug-in. Debounce on the card-level node if you care.
+    global audio_input_changed
+    if action == 'add' and device.device_node and 'pcm' in (device.device_node or ''):
+        refresh_devices()
+        inputs = [d for d in sd.query_devices() if d['max_input_channels'] > 0]
+        print('New input devices:', inputs)
+        audio_input_changed = True
+
+    elif action == 'remove' and device.device_node and 'pcm' in (device.device_node or ''):
+        refresh_devices()
+        inputs = [d for d in sd.query_devices() if d['max_input_channels'] > 0]
+        print('Removed input devices:', inputs)
+        audio_input_changed = True
+
+def setup_hotplug_event_handler():
+    context = pyudev.Context()
+    monitor = pyudev.Monitor.from_netlink(context)
+    monitor.filter_by(subsystem='sound')
+    observer = pyudev.MonitorObserver(monitor, on_event)
+    observer.start()
+
 
 def main() -> None:
+    global audio_input_changed
     parser = argparse.ArgumentParser(
         description="Voice-driven Raspberry Pi help bot using Moonshine Voice."
     )
@@ -438,34 +468,56 @@ def main() -> None:
     model_path = args.data_dir / "download.moonshine.ai/model/medium-streaming-en/quantized"
     model_arch = ModelArch.MEDIUM_STREAMING
 
-    mic_transcriber = MicTranscriber(
-        model_path=model_path, model_arch=model_arch, device=args.audio_device
-    )
-    mic_transcriber.add_listener(dialog_flow)
-
-    dialog_flow.say("Hello!")
-    dialog_flow.say("I'm the Raspberry Pi Help Bot.")
-    dialog_flow.say("How can I help you today?")
-
-    print("\n" + "=" * 60, file=sys.stderr)
-    print("Raspberry Pi Help Bot", file=sys.stderr)
-    print(
-        "Ask a question about Raspberry Pi and I'll answer it!",
-        file=sys.stderr,
-    )
-    print("Press Ctrl+C to stop.", file=sys.stderr)
-    print("=" * 60 + "\n", file=sys.stderr)
-
-    mic_transcriber.start()
-    try:
+    audio_input_changed = False
+    setup_hotplug_event_handler()
+    audio_device = wait_for_input_device(retry_count=1)
+    if audio_device is None:
+        print(f"No audio input device available; waiting for one...", file=sys.stderr)
         while True:
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("\nStopping...", file=sys.stderr)
-    finally:
-        intent_recognizer.close()
-        mic_transcriber.stop()
-        mic_transcriber.close()
+            audio_device = wait_for_input_device(retry_count=1)
+            if audio_device is not None:
+                break
+            time.sleep(1)
+            print(f"No audio input device available; sleeping 1s before next poll...", file=sys.stderr)
+        print(f"Audio input device found after waiting: {audio_device}", file=sys.stderr)
+    while True:
+        mic_transcriber = MicTranscriber(
+            model_path=model_path, model_arch=model_arch, device=audio_device
+        )
+        mic_transcriber.add_listener(dialog_flow)
+
+        dialog_flow.say("Hello!")
+        dialog_flow.say("I'm the Raspberry Pi Help Bot.")
+        dialog_flow.say("How can I help you today?")
+
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("Raspberry Pi Help Bot", file=sys.stderr)
+        print(f"Audio device: {audio_device}", file=sys.stderr)
+        print(
+            "Ask a question about Raspberry Pi and I'll answer it!",
+            file=sys.stderr,
+        )
+        print("Press Ctrl+C to stop.", file=sys.stderr)
+        print("=" * 60 + "\n", file=sys.stderr)
+
+        mic_transcriber.start()
+        try:
+            while True:
+                time.sleep(0.1)
+                if audio_input_changed:
+                    print(f"Audio input changed: {audio_input_changed}", file=sys.stderr)
+                    # Debounce multiple events in a row.
+                    time.sleep(1) 
+                    # Wait for a new audio input device to be available.
+                    audio_device = wait_for_input_device()
+                    audio_input_changed = False
+                    break
+        except KeyboardInterrupt:
+            print("\nStopping...", file=sys.stderr)
+            return
+        finally:
+            mic_transcriber.stop()
+            mic_transcriber.close()
 
 
 if __name__ == "__main__":
