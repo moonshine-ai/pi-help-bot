@@ -309,7 +309,7 @@ def main() -> None:
     parser.add_argument(
         "--tts-voice",
         type=str,
-        default="piper_en_US-amy-low",
+        default="piper_en_US-amy-medium",
         help="Voice for text-to-speech (default: piper_en_US-amy-low)",
     )
     parser.add_argument(
@@ -318,6 +318,15 @@ def main() -> None:
         default=[],
         metavar="KEY=VALUE",
         help="Extra moonshine_option_t entries; repeat for multiple (e.g. --option speed=1.1)",
+    )
+    parser.add_argument(
+        "--log-io",
+        action="store_true",
+        help=(
+            "Log every utterance received from the STT and every prompt "
+            "spoken to the TTS to stderr in 'user: ...' / 'assistant: ...' "
+            "format."
+        ),
     )
     args = parser.parse_args()
 
@@ -351,6 +360,7 @@ def main() -> None:
     dialog_flow = DialogFlow(
         tts=tts,
         intent_recognizer=intent_recognizer,
+        log_io=args.log_io,
     )
     add_config_commands(dialog_flow, tts)
 
