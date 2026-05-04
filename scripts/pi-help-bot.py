@@ -141,6 +141,14 @@ def _find_local_ip() -> str | None:
 
 
 def _scan_wifi_networks() -> list[str]:
+    update_result = subprocess.run(
+        ["sudo", "nmcli", "device", "wifi", "rescan"],
+        capture_output=True, text=True, timeout=2,
+    )
+    print(f"[DEBUG] nmcli stdout: {update_result.stdout}, {update_result.stderr}", file=sys.stderr, flush=True)
+    if update_result.returncode != 0:
+        print(f"[ERROR] nmcli stderr: {update_result.stderr}", file=sys.stderr)
+        return []
     scan_result = subprocess.run(
         ["nmcli", "-f", "SSID,SIGNAL", "device", "wifi", "list"],
         capture_output=True, text=True, timeout=2,
@@ -149,6 +157,7 @@ def _scan_wifi_networks() -> list[str]:
         print(f"[ERROR] nmcli stderr: {scan_result.stderr}", file=sys.stderr)
         return []
     networks = []
+    print(f"[DEBUG] nmcli stdout: {scan_result.stdout}", file=sys.stderr, flush=True)
     for line in scan_result.stdout.strip().split("\n")[1:]:
         match = re.match(r"^(.*?)\s+(\d+)$", line.rstrip())
         if match:
@@ -261,6 +270,12 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
             yield d.say("Say yes to the network you want to connect to.")
             for network in networks:
                 if (yield d.confirm(f"{network}?")):
+                    ssid = network
+                    break
+        elif ssid.lower().strip(string.punctuation) == "spell":
+            spell = yield d.ask("Spell out the start of the network name.", mode=SPELLED)
+            for network in networks:
+                if fuzzy_match(spell, network):
                     ssid = network
                     break
 
