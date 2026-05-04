@@ -388,6 +388,12 @@ def main() -> None:
         default=DATA_DIR,
         help="Path to the data directory (default: data)",
     )
+    parser.add_argument(
+        "--audio-device",
+        type=str,
+        default=None,
+        help="Audio device to use for input and output (default: None)",
+    )
     args = parser.parse_args()
 
     extra: dict[str, str | int | float | bool] = {}
@@ -433,7 +439,7 @@ def main() -> None:
     model_arch = ModelArch.MEDIUM_STREAMING
 
     mic_transcriber = MicTranscriber(
-        model_path=model_path, model_arch=model_arch
+        model_path=model_path, model_arch=model_arch, device=args.audio_device
     )
     mic_transcriber.add_listener(dialog_flow)
 
