@@ -23,18 +23,20 @@ import time
 import Levenshtein
 import netifaces as ni
 import string
+from pathlib import Path
 from moonshine_voice import (
+    EmbeddingModelArch,
+    ModelArch,
     SPELLED,
     Dialog,
     DialogFlow,
     IntentRecognizer,
     MicTranscriber,
     TextToSpeech,
-    TranscriptEventListener,
-    get_embedding_model,
-    get_model_for_language,
     spell_out,
 )
+
+DATA_DIR = Path(__file__).parent / "data"
 
 
 def parse_options_cli(options: list[str]) -> dict[str, str | int | float | bool]:
@@ -297,8 +299,6 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
             return
 
         yield d.say(f"Connecting to {ssid}.")
-        return
-        # TODO: Actually connect to the network
         try:
             result = subprocess.run(
                 ["sudo", "nmcli", "device", "wifi", "connect", ssid, "password", password],
@@ -323,19 +323,6 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
 
     dialog_flow.register_global("cancel", lambda d: d.cancel())
     dialog_flow.register_global("start over", lambda d: d.restart())
-
-
-class TranscriptLogger(TranscriptEventListener):
-    """Prints transcript events to stderr for debugging."""
-
-    def on_line_started(self, event):
-        print(f"[TRANSCRIPT] Started: {event.line.text}", file=sys.stderr)
-
-    def on_line_text_changed(self, event):
-        print(f"[TRANSCRIPT] Updated: {event.line.text}", file=sys.stderr)
-
-    def on_line_completed(self, event):
-        print(f"[TRANSCRIPT] Completed: {event.line.text}", file=sys.stderr)
 
 
 def main() -> None:
@@ -395,20 +382,29 @@ def main() -> None:
             "format."
         ),
     )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DATA_DIR,
+        help="Path to the data directory (default: data)",
+    )
     args = parser.parse_args()
 
     extra: dict[str, str | int | float | bool] = {}
     extra.update(parse_options_cli(args.option))
 
+    if not args.data_dir.exists():
+        print(f"[ERROR] Data directory '{args.data_dir}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+
     print(
         f"Loading embedding model (variant={args.variant})...", file=sys.stderr
     )
-    embedding_model_path, embedding_model_arch = get_embedding_model(
-        "embeddinggemma-300m", args.variant
-    )
-
+    print(f"args.data_dir: {args.data_dir}")
+    embedding_model_path = args.data_dir / "download.moonshine.ai/model/embeddinggemma-300m"
+    embedding_model_arch = EmbeddingModelArch.GEMMA_300M
     print(
-        f"Creating intent recognizer (threshold={args.threshold})...",
+        f"Creating intent recognizer from '{embedding_model_path}' (threshold={args.threshold})...",
         file=sys.stderr,
     )
     intent_recognizer = IntentRecognizer(
@@ -420,9 +416,7 @@ def main() -> None:
 
     print(
         f"Initializing TTS (language={args.tts_language})...", file=sys.stderr)
-    tts = TextToSpeech(args.tts_language, voice=args.tts_voice, options=extra)
-
-    # load_doc_faqs(args.embeddings, intent_recognizer, tts)
+    tts = TextToSpeech(args.tts_language, voice=args.tts_voice, asset_root=args.data_dir, options=extra)
 
     dialog_flow = DialogFlow(
         tts=tts,
@@ -435,12 +429,12 @@ def main() -> None:
         f"Loading transcription model (language={args.language})...",
         file=sys.stderr,
     )
-    model_path, model_arch = get_model_for_language(args.language)
+    model_path = args.data_dir / "download.moonshine.ai/model/medium-streaming-en/quantized"
+    model_arch = ModelArch.MEDIUM_STREAMING
 
     mic_transcriber = MicTranscriber(
         model_path=model_path, model_arch=model_arch
     )
-    mic_transcriber.add_listener(TranscriptLogger())
     mic_transcriber.add_listener(dialog_flow)
 
     dialog_flow.say("Hello!")

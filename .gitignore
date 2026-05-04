@@ -137,7 +137,8 @@ celerybeat.pid
 # Environments
 .env
 .envrc
-.venv
+# We're using .venv to bundle dependencies for offline use.
+# .venv
 env/
 venv/
 ENV/

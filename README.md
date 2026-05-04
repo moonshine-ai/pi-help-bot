@@ -1,0 +1,1 @@
+python -m moonshine_voice.download --language en --root data/
