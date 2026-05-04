@@ -20,7 +20,9 @@ import re
 import subprocess
 import sys
 import time
+import Levenshtein
 import netifaces as ni
+import string
 from moonshine_voice import (
     SPELLED,
     Dialog,
@@ -138,6 +140,51 @@ def _find_local_ip() -> str | None:
     return None
 
 
+def _scan_wifi_networks() -> list[str]:
+    scan_result = subprocess.run(
+        ["nmcli", "-f", "SSID,SIGNAL", "device", "wifi", "list"],
+        capture_output=True, text=True, timeout=2,
+    )
+    if scan_result.returncode != 0:
+        print(f"[ERROR] nmcli stderr: {scan_result.stderr}", file=sys.stderr)
+        return []
+    networks = []
+    for line in scan_result.stdout.strip().split("\n")[1:]:
+        match = re.match(r"^(.*?)\s+(\d+)$", line.rstrip())
+        if match:
+            ssid_candidate = match.group(1).strip()
+            signal = int(match.group(2).strip())
+            if ssid_candidate:  # filter out blank SSIDs
+                networks.append((ssid_candidate, signal))
+    # Sort by descending signal strength
+    networks.sort(key=lambda tup: tup[1], reverse=True)
+    return [ssid for ssid, _ in networks[:20]]
+
+def fuzzy_match_network(ssid: str, networks: list[str]) -> str | None:
+    for desperation in range(3):
+        for network in networks:
+            if fuzzy_match(ssid, network, desperation):
+                return network
+    return None
+
+def normalize(input: str) -> str:
+    return input.lower()
+
+def fuzzy_match(ssid: str, network: str, desperation: int = 0) -> bool:
+    normalized_ssid = normalize(ssid)
+    normalized_network = normalize(network)
+    if normalized_ssid == normalized_network:
+        return True
+    if desperation > 0:
+        levenshtein_distance = Levenshtein.distance(normalized_ssid, normalized_network)
+        max_len = max(len(normalized_ssid), len(normalized_network))
+        if max_len > 0 and levenshtein_distance / max_len <= 0.34:
+            return True
+    if desperation > 1:
+        if normalized_network.startswith(normalized_ssid):
+            return True
+    return False
+    
 def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
 
     def report_ip_address(d: Dialog):
@@ -206,23 +253,26 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
     dialog_flow.register_flow("Is Wi-Fi connected?", report_wifi_status)
 
     def connect_to_wifi(d: Dialog):
-        ssid = yield d.ask("What's the name of your Wi-Fi network?")
+        networks = _scan_wifi_networks()
+        ssid = yield d.ask("What's the name of your Wi-Fi network? Say list if you want to pick from a list or spell if you want to spell out the start of the name")
         ssid = ssid.strip()
-        if not ssid:
-            yield d.say("Sorry, I didn't catch a network name. Let's try again later.")
-            return
-        if not (yield d.confirm(f"I heard, {ssid}. Is that right?")):
-            yield d.say("No problem, let's start over.")
+
+        if ssid.lower().strip(string.punctuation) == "list":
+            yield d.say("Say yes to the network you want to connect to.")
+            for network in networks:
+                if (yield d.confirm(f"{network}?")):
+                    ssid = network
+                    break
+
+        matching_ssid = fuzzy_match_network(ssid, networks)
+        if matching_ssid is None:
+            yield d.say(f"Sorry, I couldn't find a matching network for {ssid}.")
             return
 
         password = yield d.ask(
-            "Please spell the Wi-Fi password, one character at a time, "
-            "and say done when finished.",
+            f"Please spell the Wi-Fi password for {matching_ssid} one character at a time, and say done when finished.",
             mode=SPELLED,
         )
-        if not password:
-            yield d.say("Sorry, I didn't catch a password. Let's try again later.")
-            return
 
         if (yield d.confirm("Would you like me to read the password back?")):
             yield d.say("I heard: " + " ".join(spell_out(password)))
@@ -232,6 +282,8 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
             return
 
         yield d.say(f"Connecting to {ssid}.")
+        return
+        # TODO: Actually connect to the network
         try:
             result = subprocess.run(
                 ["sudo", "nmcli", "device", "wifi", "connect", ssid, "password", password],
@@ -376,7 +428,9 @@ def main() -> None:
     mic_transcriber.add_listener(TranscriptLogger())
     mic_transcriber.add_listener(dialog_flow)
 
-    tts.say(["Hello!", "I'm the Raspberry Pi Help Bot.", "How can I help you today?"])
+    dialog_flow.say("Hello!")
+    dialog_flow.say("I'm the Raspberry Pi Help Bot.")
+    dialog_flow.say("How can I help you today?")
 
     print("\n" + "=" * 60, file=sys.stderr)
     print("Raspberry Pi Help Bot", file=sys.stderr)
