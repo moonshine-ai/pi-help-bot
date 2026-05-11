@@ -182,32 +182,37 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
 
     dialog_flow.register_flow("Is ssh enabled?", report_ssh_status)
 
-    def enable_ssh(d: Dialog):
-        if _ssh_active():
-            yield d.say("S S H is already enabled.")
+    def set_ssh(d: Dialog, enable: bool):
+        verb = "enable" if enable else "disable"
+        gerund = "Enabling" if enable else "Disabling"
+        past = "enabled" if enable else "disabled"
+        opposite_past = "disabled" if enable else "enabled"
+        if _ssh_active() == enable:
+            yield d.say(f"S S H is already {past}.")
             return
-        if not (yield d.confirm("This will enable S S H on this Raspberry Pi. Are you sure?")):
-            yield d.say("Okay, leaving S S H disabled.")
+        if not (yield d.confirm(f"This will {verb} S S H on this Raspberry Pi. Are you sure?")):
+            yield d.say(f"Okay, leaving S S H {opposite_past}.")
             return
-        yield d.say("Enabling S S H now.")
+        yield d.say(f"{gerund} S S H now.")
         try:
             result = subprocess.run(
-                ["sudo", "raspi-config", "nonint", "do_ssh", "0"],
+                ["sudo", "raspi-config", "nonint", "do_ssh", "0" if enable else "1"],
                 capture_output=True, text=True, timeout=15,
             )
         except FileNotFoundError:
             yield d.say("Sorry, raspi-config was not found on this system.")
             return
         except subprocess.TimeoutExpired:
-            yield d.say("Sorry, the command timed out while trying to enable S S H.")
+            yield d.say(f"Sorry, the command timed out while trying to {verb} S S H.")
             return
         if result.returncode == 0:
-            yield d.say("S S H has been enabled successfully.")
+            yield d.say(f"S S H has been {past} successfully.")
         else:
             print(f"[ERROR] raspi-config stderr: {result.stderr}", file=sys.stderr)
-            yield d.say("Sorry, I wasn't able to enable S S H.")
+            yield d.say(f"Sorry, I wasn't able to {verb} S S H.")
 
-    dialog_flow.register_flow("Turn on SSH", enable_ssh)
+    dialog_flow.register_flow("Turn on SSH", lambda d: set_ssh(d, True))
+    dialog_flow.register_flow("Turn off SSH", lambda d: set_ssh(d, False))
 
     def report_wifi_status(d: Dialog):
         ssid = _current_wifi_ssid()
