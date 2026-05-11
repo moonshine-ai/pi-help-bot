@@ -124,6 +124,9 @@ def _scan_wifi_networks() -> list[str]:
     return [ssid for ssid, _ in networks[:20]]
 
 def fuzzy_match_network(ssid: str, networks: list[str]) -> str | None:
+    print(f"[DEBUG] fuzzy_match_network: ssid: {ssid}, networks: {networks}", file=sys.stderr)
+    if ssid is None:
+        return None
     for desperation in range(3):
         for network in networks:
             if fuzzy_match(ssid, network, desperation):
@@ -227,11 +230,8 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
                     ssid = network
                     break
         elif ssid.lower().strip(string.punctuation) == "spell":
-            spell = yield d.ask("Spell out the start of the network name.", mode=SPELLED)
-            for network in networks:
-                if fuzzy_match(spell, network):
-                    ssid = network
-                    break
+            ssid = yield d.ask("Spell out the start of the network name.", mode=SPELLED)
+            print(f"[DEBUG] spelled buffer: {ssid!r}", file=sys.stderr)
 
         matching_ssid = fuzzy_match_network(ssid, networks)
         if matching_ssid is None:
@@ -246,11 +246,11 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
         if (yield d.confirm("Would you like me to read the password back?")):
             yield d.say("I heard: " + " ".join(spell_out(password)))
 
-        if not (yield d.confirm(f"Connect to {ssid} now?")):
+        if not (yield d.confirm(f"Connect to {matching_ssid} now?")):
             yield d.say("Okay, nothing changed.")
             return
 
-        yield d.say(f"Connecting to {ssid}.")
+        yield d.say(f"Connecting to {matching_ssid}.")
         try:
             result = subprocess.run(
                 ["sudo", "nmcli", "device", "wifi", "connect", ssid, "password", password],

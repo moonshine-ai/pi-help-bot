@@ -50,7 +50,7 @@ os.environ["VIRTUAL_ENV_PROMPT"] = "pi-help-bot" or os.path.basename(base)  # no
 
 # add the virtual environments libraries to the host python import mechanism
 prev_length = len(sys.path)
-for lib in "../lib/python3.14/site-packages".split(os.pathsep):
+for lib in "../lib/python3.13/site-packages".split(os.pathsep):
     path = os.path.realpath(os.path.join(bin_dir, lib))
     site.addsitedir(path)
 sys.path[:] = sys.path[prev_length:] + sys.path[0:prev_length]

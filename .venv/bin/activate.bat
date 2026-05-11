@@ -26,7 +26,7 @@
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-@for %%i in ("/home/pete/pi-help-bot/.venv") do @set "VIRTUAL_ENV=%%~fi"
+@for %%i in ("/home/pi/pi-help-bot/.venv") do @set "VIRTUAL_ENV=%%~fi"
 
 @set "VIRTUAL_ENV_PROMPT=pi-help-bot"
 @if NOT DEFINED VIRTUAL_ENV_PROMPT (

@@ -4,3 +4,4 @@ ollama
 tqdm
 netifaces
 Levenshtein
+pyudev
