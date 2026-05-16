@@ -19,7 +19,7 @@ sudo loginctl enable-linger "$RUN_USER"
 
 sudo tee /usr/local/bin/pi-help-bot.sh > /dev/null <<EOF
 #!/bin/bash
-exec $PROJECT_DIR/.venv/bin/python $PROJECT_DIR/pi-help-bot.py
+exec $PROJECT_DIR/.venv/bin/python $PROJECT_DIR/pi-help-bot.py --log-io --output-volume 0.25
 EOF
 sudo chmod +x /usr/local/bin/pi-help-bot.sh
 
