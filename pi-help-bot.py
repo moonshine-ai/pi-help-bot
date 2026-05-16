@@ -169,10 +169,10 @@ def add_config_commands(dialog_flow: DialogFlow, tts: TextToSpeech) -> None:
             return
         speech_ip = re.sub(r"(\d)", r"\1 ", ip.replace(".", " dot "))
         print(f"[DEBUG] reporting IP {ip!r} as {speech_ip!r}", file=sys.stderr)
-        yield d.say(
-            f"Okay. Your local IP address is {speech_ip}. "
+        yield d.say([
+            f"Okay. Your local IP address is {speech_ip}. ",
             f"To repeat, that's {speech_ip}."
-        )
+        ])
 
     dialog_flow.register_flow("What is my IP address?", report_ip_address)
 
@@ -444,7 +444,8 @@ def on_event(action, device):
     else:
         print('Removed input devices:', inputs)
 
-    current_output_capable = {d['name'] for d in devices if is_real_audio_output(d)}
+    current_output_capable = {d['name']
+                              for d in devices if is_real_audio_output(d)}
     added = current_output_capable - known_output_capable_devices
     removed = known_output_capable_devices - current_output_capable
     if added:
@@ -594,9 +595,12 @@ def main() -> None:
     model_arch = ModelArch.MEDIUM_STREAMING
 
     audio_input_changed = False
-    audio_output_changed = False
-    # Seed the snapshot so we only react to output-capable devices that
-    # appear AFTER startup (i.e. truly hot-plugged ones).
+    # Force the output-device selection to run on the first iteration of
+    # the main loop, so a real output-only device that's already plugged
+    # in at startup is chosen the same way a hot-plugged one would be.
+    audio_output_changed = True
+    # Seed the snapshot so the hot-plug handler's added/removed diff only
+    # fires for output-capable devices that appear AFTER startup.
     refresh_devices()
     known_output_capable_devices = _output_capable_device_names()
     setup_hotplug_event_handler()
